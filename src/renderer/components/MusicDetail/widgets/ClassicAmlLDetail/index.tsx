@@ -250,6 +250,7 @@ interface IClassicSliderProps {
     afterIcon?: ReactNode;
     className?: string;
     onChange: (value: number) => void;
+    onWheel?: (event: WheelEvent) => void;
 }
 
 function ClassicSlider({
@@ -263,7 +264,9 @@ function ClassicSlider({
     afterIcon,
     className,
     onChange,
+    onWheel,
 }: IClassicSliderProps) {
+    const sliderRef = useRef<HTMLDivElement>(null);
     const trackRef = useRef<HTMLDivElement>(null);
     const draggingRef = useRef(false);
     const [dragValue, setDragValue] = useState<number | null>(null);
@@ -271,6 +274,15 @@ function ClassicSlider({
 
     const currentValue = dragValue ?? value;
     const percent = max > min ? clamp((currentValue - min) / (max - min), 0, 1) : 0;
+
+    useEffect(() => {
+        const slider = sliderRef.current;
+        if (!slider || !onWheel || disabled) {
+            return;
+        }
+        slider.addEventListener("wheel", onWheel, { passive: false });
+        return () => slider.removeEventListener("wheel", onWheel);
+    }, [disabled, onWheel]);
 
     const valueFromPointer = useCallback((clientX: number) => {
         const rect = trackRef.current?.getBoundingClientRect();
@@ -314,7 +326,7 @@ function ClassicSlider({
     };
 
     return (
-        <div className={`classic-amll-slider ${className ?? ""}`}>
+        <div ref={sliderRef} className={`classic-amll-slider ${className ?? ""}`}>
             {beforeIcon}
             <div
                 ref={trackRef}
@@ -809,6 +821,21 @@ function ClassicTransport() {
 function ClassicVolume() {
     const volume = useVolume();
     const { t } = useTranslation();
+    const wheelDeltaRef = useRef(0);
+    const handleWheel = useCallback((event: WheelEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!Number.isFinite(event.deltaY)) {
+            return;
+        }
+        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+        wheelDeltaRef.current -= event.deltaY * unit;
+        const steps = Math.trunc(wheelDeltaRef.current / 100);
+        if (steps !== 0) {
+            wheelDeltaRef.current -= steps * 100;
+            trackPlayer.adjustVolume(steps * 0.01);
+        }
+    }, []);
 
     return (
         <ClassicSlider
@@ -819,6 +846,7 @@ function ClassicVolume() {
             beforeIcon={<ClassicSpeakerLowIcon className="classic-amll-volume-low"></ClassicSpeakerLowIcon>}
             afterIcon={<ClassicSpeakerHighIcon className="classic-amll-volume-high"></ClassicSpeakerHighIcon>}
             onChange={(nextVolume) => trackPlayer.setVolume(nextVolume)}
+            onWheel={handleWheel}
         ></ClassicSlider>
     );
 }

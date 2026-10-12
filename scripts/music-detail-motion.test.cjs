@@ -3,6 +3,81 @@ const fs = require("node:fs");
 const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 
+function testVolumeWheel() {
+    const ts = require("typescript");
+    const source = ts.createSourceFile("index.tsx", fs.readFileSync(path.join(root,
+        "src/renderer/components/MusicDetail/widgets/ClassicAmlLDetail/index.tsx"), "utf8"),
+    ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const component = source.statements.find((statement) => statement.name?.text === "ClassicVolume");
+    const declaration = component.body.statements.filter(ts.isVariableStatement)
+        .flatMap((statement) => [...statement.declarationList.declarations])
+        .find((variable) => variable.name.getText(source) === "handleWheel");
+    const changes = [];
+    const handler = require("node:vm").runInNewContext(ts.transpileModule(
+        "(" + declaration.initializer.arguments[0].getText(source) + ")", {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        },
+    ).outputText, {
+        wheelDeltaRef: { current: 0 }, window: { innerHeight: 800 },
+        trackPlayer: { adjustVolume(delta) { changes.push(delta); } },
+    });
+    const wheel = (deltaY, deltaMode = 0) => {
+        let prevented = false;
+        let stopped = false;
+        handler({ deltaY, deltaMode,
+            preventDefault() { prevented = true; }, stopPropagation() { stopped = true; },
+        });
+        assert.ok(prevented && stopped, "volume wheel must suppress scrolling and propagation");
+    };
+    wheel(-100);
+    wheel(200);
+    wheel(-40);
+    assert.deepEqual(changes, [0.01, -0.02]);
+    wheel(-60);
+    wheel(NaN);
+    wheel(Infinity);
+    wheel(-25, 1);
+    wheel(1, 2);
+    assert.deepEqual(changes, [0.01, -0.02, 0.01, 0.04, -0.08]);
+    assert.ok(component.getText(source).includes("onWheel={handleWheel}"));
+    const slider = source.statements.find((statement) => statement.name?.text === "ClassicSlider");
+    const effect = slider.body.statements.find((statement) =>
+        ts.isExpressionStatement(statement) && statement.expression.expression?.text === "useEffect");
+    let listener;
+    let cleanup;
+    const element = {
+        addEventListener(type, callback, options) {
+            assert.equal(type, "wheel");
+            assert.equal(options.passive, false);
+            listener = callback;
+        },
+        removeEventListener(type, callback) {
+            assert.equal(type, "wheel");
+            assert.equal(callback, listener);
+            listener = undefined;
+        },
+    };
+    const context = {
+        sliderRef: { current: element }, onWheel: handler, disabled: false,
+        useEffect(callback) { cleanup = callback(); },
+    };
+    const code = ts.transpileModule(effect.getText(source), {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    require("node:vm").runInNewContext(code, context);
+    assert.equal(listener, handler);
+    cleanup();
+    assert.equal(listener, undefined);
+    context.disabled = true;
+    require("node:vm").runInNewContext(code, context);
+    assert.equal(listener, undefined);
+    context.disabled = false;
+    context.onWheel = undefined;
+    require("node:vm").runInNewContext(code, context);
+    assert.equal(listener, undefined, "progress slider must not capture wheel events");
+    console.log("Volume wheel passed: direction, accumulation, delta modes, invalid input and listener cleanup");
+}
+
 function testSongMoreMenu() {
     const ts = require("typescript");
     const source = ts.createSourceFile("index.tsx", fs.readFileSync(path.join(root,
@@ -240,6 +315,7 @@ if (process.argv.includes("--electron-child")) {
         require("electron").app.exit(1);
     });
 } else {
+    testVolumeWheel();
     testSongMoreMenu();
     testFavoriteMotion();
     testMotion();
