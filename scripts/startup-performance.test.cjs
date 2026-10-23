@@ -35,7 +35,11 @@ const packageSmokeSource = read("scripts/package-smoke.cjs");
 assert.match(packageSmokeSource, /mainReady: !!document\.querySelector\("\.app-container \.music-bar-container"\)/);
 assert.match(packageSmokeSource, /&& !document\.querySelector\("\.startup-shell"\)/);
 assert.match(packageSmokeSource, /if \(name === "main_window" && !state\.mainReady\) return null;/);
-assert.match(packageSmokeSource, /path\.join\(userDataPath, "config\.json"\),\s*JSON\.stringify\(\{ "normal\.checkUpdate": false \}\)/);
+assert.match(
+    packageSmokeSource,
+    /path\.join\(userDataPath, "config\.json"\),\s*JSON\.stringify\(\{ "\$schema-version": 1, "normal\.checkUpdate": false \}\)/,
+    "smoke config must declare its schema so legacy migration does not reset checkUpdate",
+);
 assert.match(
     packageSmokeSource,
     /"open default detail"[\s\S]*?await retry\([\s\S]*?data-playback-detail=default\]\[data-page-motion=visible\]:not\(\[inert\]\)/,

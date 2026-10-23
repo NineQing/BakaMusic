@@ -223,7 +223,11 @@ if (videoMode) {
 const wasapiExclusiveRequested =
     process.platform === "win32"
     && process.env.BAKAMUSIC_WASAPI_EXCLUSIVE === "1";
-if (process.platform === "win32") {
+// Package smoke still decodes and advances playback on machines without an
+// audio endpoint. This explicit test setting never falls back on device errors.
+if (process.env.BAKAMUSIC_SMOKE_AUDIO_OUTPUT === "null") {
+    bootstrapOptions.push(["ao", "null"]);
+} else if (process.platform === "win32") {
     bootstrapOptions.push(["ao", "wasapi"]);
     if (wasapiExclusiveRequested) {
         bootstrapOptions.push(["audio-exclusive", "yes"]);

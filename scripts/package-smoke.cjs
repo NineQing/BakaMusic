@@ -14,6 +14,9 @@ const ac4FixturePath = path.resolve(
 );
 const targetNames = ["main_window", "lrc_window", "minimode_window", "mv_window"];
 const serviceNames = ["mflac-proxy", "luna-proxy"];
+// Null output exercises decoding and timing without depending on host hardware.
+// Set BAKAMUSIC_SMOKE_AUDIO_OUTPUT=system to additionally verify real audio output.
+const smokeAudioOutput = process.env.BAKAMUSIC_SMOKE_AUDIO_OUTPUT ?? "null";
 
 function delay(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -284,6 +287,14 @@ class CdpSession {
         return result.result?.value;
     }
 
+    async waitForState(expression, expected, label) {
+        return retry(async () => {
+            const state = await this.evaluate(expression, label);
+            assert.deepEqual(state, expected, `Unexpected UI state (${label})`);
+            return state;
+        });
+    }
+
     close() {
         this.socket?.close();
     }
@@ -331,6 +342,7 @@ async function inspectWindow(session, name) {
 }
 
 async function run() {
+    assert.ok(["null", "system"].includes(smokeAudioOutput), "Invalid smoke audio output");
     assert.ok(fs.existsSync(appPath), `Packaged app not found: ${appPath}`);
     const port = await getFreePort();
     let webdavDirectoryExists = false;
@@ -475,7 +487,7 @@ async function run() {
     ]);
     await fs.promises.writeFile(
         path.join(userDataPath, "config.json"),
-        JSON.stringify({ "normal.checkUpdate": false }),
+        JSON.stringify({ "$schema-version": 1, "normal.checkUpdate": false }),
         "utf8",
     );
     const pluginPath = path.join(userDataPath, "bakamusic-plugins");
@@ -640,6 +652,7 @@ async function run() {
     ], {
         env: {
             ...process.env,
+            BAKAMUSIC_SMOKE_AUDIO_OUTPUT: smokeAudioOutput,
             APPDATA: appDataPath,
             HTTP_PROXY: resourceOrigin,
             HTTPS_PROXY: resourceOrigin,
@@ -663,6 +676,10 @@ async function run() {
         const mainSession = mainSessions.get("main_window");
         sessions.set("main_window", mainSession);
         await inspectWindow(mainSession, "main_window");
+        assert.equal(await mainSession.evaluate(
+            '(async () => (await window["@shared/app-config"].syncConfig())["normal.checkUpdate"])()',
+            "smoke startup config",
+        ), false, "Smoke config must disable automatic update requests");
         const rendererBoundary = await mainSession.evaluate(`(() => {
             const pluginBridge = window["@shared/plugin-manager"];
             const nodeRuntime = window["@shared/node-runtime"];
@@ -718,11 +735,29 @@ async function run() {
             '!!document.querySelector(".music-detail--container[data-playback-detail=classic-amll]:not([inert]) .classic-amll-output-button")',
             "DLNA AMLL detail ready",
         ));
-        const dlnaDialog = await mainSession.evaluate(
-            '(async () => { const trigger = document.querySelector(".classic-amll-output-button"); trigger.focus(); trigger.click(); await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))); const dialog = document.querySelector(".modal--dlna"); const container = dialog?.closest("[role=dialog]"); const favorite = document.querySelector(".classic-amll-favorite-button"); return { open: !!dialog, semantic: container?.getAttribute("aria-modal"), focusContained: !!container?.contains(document.activeElement), localFocused: document.activeElement === dialog?.querySelector(".dlna-output"), scanButton: !!dialog?.querySelector(".dlna-refresh"), hasHint: !!dialog?.querySelector(".dlna-hint"), favoriteBeforeMore: favorite?.nextElementSibling?.classList.contains("classic-amll-menu-button"), outputFirst: trigger === document.querySelector(".classic-amll-bottom-controls")?.firstElementChild }; })()',
-            "DLNA dialog and AMLL layout",
+        await mainSession.evaluate(
+            '(() => { const trigger = document.querySelector(".classic-amll-output-button"); trigger.focus(); trigger.click(); })()',
+            "open DLNA dialog",
         );
-        assert.deepEqual(dlnaDialog, {
+        // Poll the observable state from Node: animation frames may pause when
+        // Windows occludes the app, and two frames do not guarantee React/IPC
+        // completion. Keep actions outside the retry so each is sent only once.
+        const dlnaDialog = await mainSession.waitForState(`(() => {
+            const trigger = document.querySelector(".classic-amll-output-button");
+            const dialog = document.querySelector(".modal--dlna");
+            const container = dialog?.closest("[role=dialog]");
+            const favorite = document.querySelector(".classic-amll-favorite-button");
+            return {
+                open: !!dialog,
+                semantic: container?.getAttribute("aria-modal"),
+                focusContained: !!container?.contains(document.activeElement),
+                localFocused: document.activeElement === dialog?.querySelector(".dlna-output"),
+                scanButton: !!dialog?.querySelector(".dlna-refresh"),
+                hasHint: !!dialog?.querySelector(".dlna-hint"),
+                favoriteBeforeMore: favorite?.nextElementSibling?.classList.contains("classic-amll-menu-button"),
+                outputFirst: trigger === document.querySelector(".classic-amll-bottom-controls")?.firstElementChild,
+            };
+        })()`, {
             open: true,
             semantic: "true",
             focusContained: true,
@@ -731,7 +766,7 @@ async function run() {
             hasHint: true,
             favoriteBeforeMore: true,
             outputFirst: true,
-        });
+        }, "DLNA dialog and AMLL layout");
         if (process.env.BAKAMUSIC_SMOKE_SCREENSHOT_DIR) {
             await delay(400);
             const screenshot = await mainSession.send("Page.captureScreenshot", { format: "png" });
@@ -741,11 +776,15 @@ async function run() {
                 Buffer.from(screenshot.data, "base64"),
             );
         }
-        const dlnaClosed = await mainSession.evaluate(
-            '(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape", key: "Escape", bubbles: true })); await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))); return { closed: !document.querySelector(".modal--dlna"), focusRestored: document.activeElement?.classList.contains("classic-amll-output-button"), detailStillOpen: !!document.querySelector(".music-detail--container:not([inert])") }; })()',
-            "DLNA dialog Escape and focus restore",
+        await mainSession.evaluate(
+            'document.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape", key: "Escape", bubbles: true }))',
+            "close DLNA dialog with Escape",
         );
-        assert.deepEqual(dlnaClosed, { closed: true, focusRestored: true, detailStillOpen: true });
+        const dlnaClosed = await mainSession.waitForState(`(() => ({
+            closed: !document.querySelector(".modal--dlna"),
+            focusRestored: document.activeElement?.classList.contains("classic-amll-output-button"),
+            detailStillOpen: !!document.querySelector(".music-detail--container:not([inert])"),
+        }))()`, { closed: true, focusRestored: true, detailStillOpen: true }, "DLNA dialog Escape and focus restore");
         await mainSession.evaluate(
             'window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape", key: "Escape", bubbles: true }))',
             "close AMLL detail",
@@ -912,21 +951,24 @@ async function run() {
                 const mediaUrl = isRemote
                     ? source
                     : window["@shared/utils"].fs.addFileScheme(source);
+                let lastSnapshot;
                 const reachedPlaying = new Promise((resolve) => {
                     const timer = setTimeout(() => {
                         cleanup();
-                        resolve(false);
+                        resolve({ error: "Timed out waiting for playback progress", sourceId, lastSnapshot });
                     }, 15_000);
                     const cleanup = bridge.onSnapshot((snapshot) => {
                         if (snapshot.sourceId !== sourceId) return;
-                        if (snapshot.state === "playing") {
+                        lastSnapshot = snapshot;
+                        if ((snapshot.state === "playing" && snapshot.currentTime > 0)
+                            || (snapshot.ended && snapshot.duration > 0)) {
                             clearTimeout(timer);
                             cleanup();
                             resolve(true);
                         } else if (snapshot.state === "error") {
                             clearTimeout(timer);
                             cleanup();
-                            resolve(false);
+                            resolve(snapshot);
                         }
                     });
                 });
@@ -945,6 +987,9 @@ async function run() {
                 await bridge.command({ operation: "play", sourceId });
                 results[name] = await reachedPlaying;
                 await bridge.command({ operation: "stop", sourceId });
+                if (results[name] !== true) {
+                    throw new Error("Native playback failed: " + JSON.stringify(results[name]));
+                }
             }
             return {
                 available: initialCapabilities.available,
@@ -1226,6 +1271,7 @@ async function run() {
             `Runtime errors: ${JSON.stringify(runtimeErrors)}`,
         );
         console.log(JSON.stringify({
+            smokeAudioOutput,
             windowStates,
             boundaryState,
             dlnaState,
