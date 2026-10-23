@@ -30,13 +30,29 @@
   ${EndIf}
 !macroend
 
+; NSIS Delete also matches Windows 8.3 aliases: unins???.exe matches
+; UNINST~1.EXE (Uninstall BakaMusic.exe). Enumerate Inno's numeric filenames
+; explicitly because customInstall runs AFTER the new uninstaller is written.
+!macro removeLegacyInnoUninstallers
+  Push $0
+  Push $1
+  StrCpy $0 0
+  ${Do}
+    IntFmt $1 "%03u" $0
+    Delete "$INSTDIR\unins$1.dat"
+    Delete "$INSTDIR\unins$1.exe"
+    Delete "$INSTDIR\unins$1.msg"
+    IntOp $0 $0 + 1
+  ${LoopUntil} $0 > 999
+  Pop $1
+  Pop $0
+!macroend
+
 !macro customInstall
   DeleteRegKey SHELL_CONTEXT "${BAKAMUSIC_INNO_UNINSTALL_KEY}"
   ${If} $installMode == "all"
     DeleteRegKey HKCU "${BAKAMUSIC_INNO_UNINSTALL_KEY}"
   ${EndIf}
 
-  Delete "$INSTDIR\unins???.dat"
-  Delete "$INSTDIR\unins???.exe"
-  Delete "$INSTDIR\unins???.msg"
+  !insertmacro removeLegacyInnoUninstallers
 !macroend

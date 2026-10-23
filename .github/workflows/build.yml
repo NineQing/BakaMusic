@@ -190,6 +190,9 @@ jobs:
             Move-Item -LiteralPath $artifact.FullName -Destination "./out/$artifactName" -Force
           }
           Compress-Archive -Path "./out/BakaMusic-win32-x64" -DestinationPath "BakaMusic-${{ env.VERSION }}-win32-x64-portable.zip" -Force
+      - name: Verify Windows installer cleanup
+        if: matrix.platform == 'windows'
+        run: npm run test:windows-packaging
       - name: Sign Windows executables
         if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'windows'
         continue-on-error: true
